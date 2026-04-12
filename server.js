@@ -56,21 +56,16 @@ async function renovarToken() {
   }
 }
 
-// ─── Mapeamento de códigos de vendedor ───────────────────────────────
+// ─── Mapeamento de IDs de vendedor ───────────────────────────────────
 const VENDEDORES = {
-  "v17":  "Felipe",
-  "vp3":  "Giovana",
-  "vp4":  "Guilherme",
-  "":     "Gerentes",
+  15596666568: "Guilherme",
+  15596595092: "Felipe",
+  15596218776: "Giovana",
 };
 
-function nomeVendedor(codigo) {
-  if (!codigo) return "Gerentes";
-  const c = codigo.trim().toLowerCase();
-  for (const [key, nome] of Object.entries(VENDEDORES)) {
-    if (key && c === key.toLowerCase()) return nome;
-  }
-  return codigo; // retorna o código se não encontrar
+function nomeVendedor(id) {
+  if (!id || id === 0) return "Gerentes";
+  return VENDEDORES[id] || `Vendedor ${id}`;
 }
 
 // ─── Buscar pedidos de venda por período ──────────────────────────────
@@ -103,7 +98,7 @@ app.get("/vendas", async (req, res) => {
     // Buscar detalhes de cada pedido para obter vendedor e itens
     const porVendedor = {};
     for (const pedido of todosPedidos) {
-      let codigoVendedor = "";
+      let codigoVendedor = 0;
       let pecas = 0;
 
       try {
@@ -111,7 +106,7 @@ app.get("/vendas", async (req, res) => {
           headers: { Authorization: `Bearer ${accessToken}` },
         });
         const d = det.data.data || {};
-        codigoVendedor = d.vendedor?.nome || d.vendedor?.codigo || "";
+        codigoVendedor = d.vendedor?.id || 0;
         pecas = (d.itens || []).reduce((s, i) => s + (Number(i.quantidade) || 0), 0);
         await delay(400);
       } catch (e) {
