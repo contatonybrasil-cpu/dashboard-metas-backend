@@ -113,6 +113,20 @@ app.get("/vendas", async (req, res) => {
   }
 });
 
+// ─── Debug: ver estrutura de 1 pedido ────────────────────────────────
+app.get("/debug", async (req, res) => {
+  if (!accessToken) return res.status(401).json({ erro: "Não autenticado." });
+  try {
+    const response = await axios.get("https://www.bling.com.br/Api/v3/pedidos/vendas", {
+      headers: { Authorization: `Bearer ${accessToken}` },
+      params: { pagina: 1, limite: 1 },
+    });
+    res.json(response.data);
+  } catch (err) {
+    res.status(500).json({ erro: err.response?.data || err.message });
+  }
+});
+
 // ─── Status ───────────────────────────────────────────────────────────
 app.get("/status", (req, res) => {
   res.json({ ok: true, autenticado: !!accessToken });
