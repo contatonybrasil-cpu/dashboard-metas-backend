@@ -147,23 +147,23 @@ app.get("/vendas", async (req, res) => {
   }
 });
 
-// ─── Debug: ver estrutura de 1 pedido com data ───────────────────────
+// ─── Debug: ver detalhe completo de um pedido por ID ─────────────────
 app.get("/debug", async (req, res) => {
   if (!accessToken) return res.status(401).json({ erro: "Não autenticado." });
   try {
-    const response = await axios.get("https://www.bling.com.br/Api/v3/pedidos/vendas", {
+    // Pega o ID do primeiro pedido de abril
+    const lista = await axios.get("https://www.bling.com.br/Api/v3/pedidos/vendas", {
       headers: { Authorization: `Bearer ${accessToken}` },
-      params: { dataInicial: "2026-04-01", dataFinal: "2026-04-12", pagina: 1, limite: 3 },
+      params: { dataInicial: "2026-04-01", dataFinal: "2026-04-12", pagina: 1, limite: 1 },
     });
-    // Mostrar só os campos relevantes de cada pedido
-    const resumo = (response.data.data || []).map(p => ({
-      numero: p.numero,
-      data: p.data,
-      total: p.totalProdutos || p.total,
-      vendedor: p.vendedor,
-      contato: p.contato?.nome,
-    }));
-    res.json({ total: response.data.data?.length, pedidos: resumo });
+    const primeiroPedido = lista.data.data?.[0];
+    if (!primeiroPedido) return res.json({ erro: "Nenhum pedido encontrado" });
+
+    // Busca o detalhe completo pelo ID
+    const detalhe = await axios.get(`https://www.bling.com.br/Api/v3/pedidos/vendas/${primeiroPedido.id}`, {
+      headers: { Authorization: `Bearer ${accessToken}` },
+    });
+    res.json(detalhe.data);
   } catch (err) {
     res.status(500).json({ erro: err.response?.data || err.message });
   }
