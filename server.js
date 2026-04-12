@@ -56,6 +56,23 @@ async function renovarToken() {
   }
 }
 
+// ─── Mapeamento de códigos de vendedor ───────────────────────────────
+const VENDEDORES = {
+  "v17":  "Felipe",
+  "vp3":  "Giovana",
+  "vp4":  "Guilherme",
+  "":     "Gerentes",
+};
+
+function nomeVendedor(codigo) {
+  if (!codigo) return "Gerentes";
+  const c = codigo.trim().toLowerCase();
+  for (const [key, nome] of Object.entries(VENDEDORES)) {
+    if (key && c === key.toLowerCase()) return nome;
+  }
+  return codigo; // retorna o código se não encontrar
+}
+
 // ─── Buscar pedidos de venda por período ──────────────────────────────
 app.get("/vendas", async (req, res) => {
   if (!accessToken) return res.status(401).json({ erro: "Não autenticado. Acesse /auth primeiro." });
@@ -80,25 +97,26 @@ app.get("/vendas", async (req, res) => {
       pagina++;
     }
 
-    // Agrupar por vendedor
+    // Agrupar por vendedor usando mapeamento de códigos
     const porVendedor = {};
     for (const pedido of todosPedidos) {
-      const vendedor = pedido.vendedor?.nome || "Sem vendedor";
-      if (!porVendedor[vendedor]) {
-        porVendedor[vendedor] = { nome: vendedor, faturamento: 0, pedidos: 0, pecas: 0, valorPedidos: [] };
+      const codigoRaw = pedido.vendedor?.nome || pedido.vendedor?.codigo || pedido.vendedor || "";
+      const nome = nomeVendedor(typeof codigoRaw === "string" ? codigoRaw : "");
+
+      if (!porVendedor[nome]) {
+        porVendedor[nome] = { nome, faturamento: 0, pedidos: 0, pecas: 0 };
       }
-      const valor = pedido.totalProdutos || 0;
-      porVendedor[vendedor].faturamento += valor;
-      porVendedor[vendedor].pedidos += 1;
-      porVendedor[vendedor].pecas += (pedido.itens || []).reduce((s, i) => s + (i.quantidade || 0), 0);
-      porVendedor[vendedor].valorPedidos.push(valor);
+      const valor = pedido.totalProdutos || pedido.total || 0;
+      porVendedor[nome].faturamento += valor;
+      porVendedor[nome].pedidos += 1;
+      porVendedor[nome].pecas += (pedido.itens || []).reduce((s, i) => s + (i.quantidade || 0), 0);
     }
 
     // Calcular ticket médio
     const resultado = Object.values(porVendedor).map(v => ({
       ...v,
-      ticketMedio: v.pedidos > 0 ? v.faturamento / v.pedidos : 0,
-      valorPedidos: undefined,
+      ticketMedio: v.pedidos > 0 ? +(v.faturamento / v.pedidos).toFixed(2) : 0,
+      faturamento: +v.faturamento.toFixed(2),
     }));
 
     res.json({ periodo: { inicio, fim }, vendedores: resultado, totalPedidos: todosPedidos.length });
