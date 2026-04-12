@@ -107,8 +107,9 @@ app.get("/vendas", async (req, res) => {
       await renovarToken();
       return res.status(401).json({ erro: "Token renovado, tente novamente." });
     }
-    console.error(err.response?.data || err.message);
-    res.status(500).json({ erro: "Erro ao buscar vendas no Bling." });
+    const detalhe = err.response?.data || err.message;
+    console.error("ERRO BLING:", JSON.stringify(detalhe));
+    res.status(500).json({ erro: "Erro ao buscar vendas no Bling.", detalhe });
   }
 });
 
