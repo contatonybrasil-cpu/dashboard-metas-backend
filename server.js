@@ -85,16 +85,19 @@ app.get("/vendas", async (req, res) => {
     let pagina = 1;
     let todosPedidos = [];
 
+    const delay = ms => new Promise(r => setTimeout(r, ms));
+
     while (true) {
       const response = await axios.get("https://www.bling.com.br/Api/v3/pedidos/vendas", {
         headers: { Authorization: `Bearer ${accessToken}` },
-        params: { dataInicio: inicio, dataFim: fim, pagina, limite: 100 },
+        params: { dataInicial: inicio, dataFinal: fim, pagina, limite: 100 },
       });
 
       const pedidos = response.data.data || [];
       todosPedidos = [...todosPedidos, ...pedidos];
       if (pedidos.length < 100) break;
       pagina++;
+      await delay(400); // respeita o limite de 3 req/segundo do Bling
     }
 
     // Agrupar por vendedor usando mapeamento de códigos
@@ -131,15 +134,23 @@ app.get("/vendas", async (req, res) => {
   }
 });
 
-// ─── Debug: ver estrutura de 1 pedido ────────────────────────────────
+// ─── Debug: ver estrutura de 1 pedido com data ───────────────────────
 app.get("/debug", async (req, res) => {
   if (!accessToken) return res.status(401).json({ erro: "Não autenticado." });
   try {
     const response = await axios.get("https://www.bling.com.br/Api/v3/pedidos/vendas", {
       headers: { Authorization: `Bearer ${accessToken}` },
-      params: { pagina: 1, limite: 1 },
+      params: { dataInicial: "2026-04-01", dataFinal: "2026-04-12", pagina: 1, limite: 3 },
     });
-    res.json(response.data);
+    // Mostrar só os campos relevantes de cada pedido
+    const resumo = (response.data.data || []).map(p => ({
+      numero: p.numero,
+      data: p.data,
+      total: p.totalProdutos || p.total,
+      vendedor: p.vendedor,
+      contato: p.contato?.nome,
+    }));
+    res.json({ total: response.data.data?.length, pedidos: resumo });
   } catch (err) {
     res.status(500).json({ erro: err.response?.data || err.message });
   }
