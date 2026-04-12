@@ -100,19 +100,32 @@ app.get("/vendas", async (req, res) => {
       await delay(400); // respeita o limite de 3 req/segundo do Bling
     }
 
-    // Agrupar por vendedor usando mapeamento de códigos
+    // Buscar detalhes de cada pedido para obter vendedor e itens
     const porVendedor = {};
     for (const pedido of todosPedidos) {
-      const codigoRaw = pedido.vendedor?.nome || pedido.vendedor?.codigo || pedido.vendedor || "";
-      const nome = nomeVendedor(typeof codigoRaw === "string" ? codigoRaw : "");
+      let codigoVendedor = "";
+      let pecas = 0;
 
+      try {
+        const det = await axios.get(`https://www.bling.com.br/Api/v3/pedidos/vendas/${pedido.id}`, {
+          headers: { Authorization: `Bearer ${accessToken}` },
+        });
+        const d = det.data.data || {};
+        codigoVendedor = d.vendedor?.nome || d.vendedor?.codigo || "";
+        pecas = (d.itens || []).reduce((s, i) => s + (Number(i.quantidade) || 0), 0);
+        await delay(400);
+      } catch (e) {
+        // se falhar, ignora e continua
+      }
+
+      const nome = nomeVendedor(codigoVendedor);
       if (!porVendedor[nome]) {
         porVendedor[nome] = { nome, faturamento: 0, pedidos: 0, pecas: 0 };
       }
       const valor = pedido.totalProdutos || pedido.total || 0;
       porVendedor[nome].faturamento += valor;
       porVendedor[nome].pedidos += 1;
-      porVendedor[nome].pecas += (pedido.itens || []).reduce((s, i) => s + (i.quantidade || 0), 0);
+      porVendedor[nome].pecas += pecas;
     }
 
     // Calcular ticket médio
