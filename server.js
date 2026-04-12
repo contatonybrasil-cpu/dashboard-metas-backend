@@ -3,7 +3,7 @@ const axios = require("axios");
 const cors = require("cors");
 
 const app = express();
-app.use(cors({ origin: "*" }));
+app.use(cors());
 app.use(express.json());
 
 const CLIENT_ID = process.env.BLING_CLIENT_ID;
@@ -56,6 +56,13 @@ async function renovarToken() {
   }
 }
 
+// ─── Cache ────────────────────────────────────────────────────────────
+const cache = {};
+const CACHE_TTL = 30 * 60 * 1000; // 30 minutos
+
+function cacheKey(inicio, fim) { return `${inicio}_${fim}`; }
+function cacheValido(key) { return cache[key] && (Date.now() - cache[key].ts) < CACHE_TTL; }
+
 // ─── Mapeamento de IDs de vendedor ───────────────────────────────────
 const VENDEDORES = {
   15596666568: "Guilherme",
@@ -75,6 +82,15 @@ app.get("/vendas", async (req, res) => {
   const { dataInicio, dataFim } = req.query;
   const inicio = dataInicio || new Date(new Date().getFullYear(), new Date().getMonth(), 1).toISOString().slice(0, 10);
   const fim = dataFim || new Date().toISOString().slice(0, 10);
+  const key = cacheKey(inicio, fim);
+
+  // Retorna cache se válido
+  if (cacheValido(key)) {
+    console.log(`Cache hit: ${key}`);
+    return res.json(cache[key].data);
+  }
+
+  console.log(`Cache miss: ${key} — buscando no Bling...`);
 
   try {
     let pagina = 1;
@@ -130,7 +146,9 @@ app.get("/vendas", async (req, res) => {
       faturamento: +v.faturamento.toFixed(2),
     }));
 
-    res.json({ periodo: { inicio, fim }, vendedores: resultado, totalPedidos: todosPedidos.length });
+    const resposta = { periodo: { inicio, fim }, vendedores: resultado, totalPedidos: todosPedidos.length };
+    cache[key] = { data: resposta, ts: Date.now() };
+    res.json(resposta);
   } catch (err) {
     if (err.response?.status === 401) {
       await renovarToken();
@@ -164,9 +182,20 @@ app.get("/debug", async (req, res) => {
   }
 });
 
+// ─── Limpar cache manualmente ─────────────────────────────────────────
+app.get("/cache/limpar", (req, res) => {
+  Object.keys(cache).forEach(k => delete cache[k]);
+  res.json({ ok: true, msg: "Cache limpo! Próxima consulta vai buscar dados frescos do Bling." });
+});
+
 // ─── Status ───────────────────────────────────────────────────────────
 app.get("/status", (req, res) => {
-  res.json({ ok: true, autenticado: !!accessToken });
+  const caches = Object.keys(cache).map(k => ({
+    periodo: k,
+    idadeMinutos: Math.round((Date.now() - cache[k].ts) / 60000),
+    valido: cacheValido(k),
+  }));
+  res.json({ ok: true, autenticado: !!accessToken, caches });
 });
 
 const PORT = process.env.PORT || 3000;
