@@ -135,7 +135,7 @@ app.get("/vendas", async (req, res) => {
       if (!porVendedor[nome]) {
         porVendedor[nome] = { nome, faturamento: 0, pedidos: 0, pecas: 0 };
       }
-      const valor = pedido.totalProdutos || pedido.total || 0;
+      const valor = pedido.total || 0;
       porVendedor[nome].faturamento += valor;
       porVendedor[nome].pedidos += 1;
       porVendedor[nome].pecas += pecas;
@@ -292,7 +292,7 @@ async function preCarregarCache() {
 
       const nome = nomeVendedor(codigoVendedor);
       if (!porVendedor[nome]) porVendedor[nome] = { nome, faturamento: 0, pedidos: 0, pecas: 0 };
-      const valor = pedido.totalProdutos || pedido.total || 0;
+      const valor = pedido.total || 0;
       porVendedor[nome].faturamento += valor;
       porVendedor[nome].pedidos += 1;
       porVendedor[nome].pecas += pecas;
