@@ -113,23 +113,34 @@ app.get("/vendas", async (req, res) => {
       await delay(400); // respeita o limite de 3 req/segundo do Bling
     }
 
-    // Buscar detalhes de cada pedido para obter vendedor e itens
+    // Buscar detalhes de cada pedido com retry automático
+    async function buscarDetalhePedido(id, tentativas = 3) {
+      for (let i = 0; i < tentativas; i++) {
+        try {
+          const det = await axios.get(`https://www.bling.com.br/Api/v3/pedidos/vendas/${id}`, {
+            headers: { Authorization: `Bearer ${accessToken}` },
+          });
+          return det.data.data || {};
+        } catch (e) {
+          const status = e.response?.status;
+          const tipo = e.response?.data?.error?.type;
+          if (tipo === "TOO_MANY_REQUESTS" || status === 429) {
+            console.log(`Rate limit no pedido ${id}, tentativa ${i+1}/${tentativas}. Aguardando...`);
+            await delay(2000 * (i + 1)); // espera 2s, 4s, 6s
+          } else {
+            break; // erro diferente, não tenta de novo
+          }
+        }
+      }
+      return {};
+    }
+
     const porVendedor = {};
     for (const pedido of todosPedidos) {
-      let codigoVendedor = 0;
-      let pecas = 0;
-
-      try {
-        const det = await axios.get(`https://www.bling.com.br/Api/v3/pedidos/vendas/${pedido.id}`, {
-          headers: { Authorization: `Bearer ${accessToken}` },
-        });
-        const d = det.data.data || {};
-        codigoVendedor = d.vendedor?.id || 0;
-        pecas = (d.itens || []).reduce((s, i) => s + (Number(i.quantidade) || 0), 0);
-        await delay(400);
-      } catch (e) {
-        // se falhar, ignora e continua
-      }
+      const d = await buscarDetalhePedido(pedido.id);
+      const codigoVendedor = d.vendedor?.id || 0;
+      const pecas = (d.itens || []).reduce((s, i) => s + (Number(i.quantidade) || 0), 0);
+      await delay(400);
 
       const nome = nomeVendedor(codigoVendedor);
       if (!porVendedor[nome]) {
@@ -277,18 +288,29 @@ async function preCarregarCache() {
     }
 
     const porVendedor = {};
+
+    async function buscarDetalhePedidoBG(id, tentativas = 3) {
+      for (let i = 0; i < tentativas; i++) {
+        try {
+          const det = await axios.get(`https://www.bling.com.br/Api/v3/pedidos/vendas/${id}`, {
+            headers: { Authorization: `Bearer ${accessToken}` },
+          });
+          return det.data.data || {};
+        } catch (e) {
+          const tipo = e.response?.data?.error?.type;
+          if (tipo === "TOO_MANY_REQUESTS" || e.response?.status === 429) {
+            await delay(2000 * (i + 1));
+          } else { break; }
+        }
+      }
+      return {};
+    }
+
     for (const pedido of todosPedidos) {
-      let codigoVendedor = 0;
-      let pecas = 0;
-      try {
-        const det = await axios.get(`https://www.bling.com.br/Api/v3/pedidos/vendas/${pedido.id}`, {
-          headers: { Authorization: `Bearer ${accessToken}` },
-        });
-        const d = det.data.data || {};
-        codigoVendedor = d.vendedor?.id || 0;
-        pecas = (d.itens || []).reduce((s, i) => s + (Number(i.quantidade) || 0), 0);
-        await delay(400);
-      } catch (e) {}
+      const d = await buscarDetalhePedidoBG(pedido.id);
+      const codigoVendedor = d.vendedor?.id || 0;
+      const pecas = (d.itens || []).reduce((s, i) => s + (Number(i.quantidade) || 0), 0);
+      await delay(400);
 
       const nome = nomeVendedor(codigoVendedor);
       if (!porVendedor[nome]) porVendedor[nome] = { nome, faturamento: 0, pedidos: 0, pecas: 0 };
