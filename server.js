@@ -206,6 +206,33 @@ app.get("/debug", async (req, res) => {
   }
 });
 
+// ─── Debug: ver pedidos e seus vendedores ────────────────────────────
+app.get("/sem-vendedor", async (req, res) => {
+  if (!accessToken) return res.status(401).json({ erro: "Não autenticado." });
+  const delay = ms => new Promise(r => setTimeout(r, ms));
+  const inicio = req.query.dataInicio || "2026-04-01";
+  const fim = req.query.dataFim || new Date().toISOString().slice(0, 10);
+  try {
+    const lista = await axios.get("https://www.bling.com.br/Api/v3/pedidos/vendas", {
+      headers: { Authorization: `Bearer ${accessToken}` },
+      params: { dataInicial: inicio, dataFinal: fim, pagina: 1, limite: 10 },
+    });
+    const pedidos = lista.data.data || [];
+    const resultado = [];
+    for (const p of pedidos) {
+      const det = await axios.get(`https://www.bling.com.br/Api/v3/pedidos/vendas/${p.id}`, {
+        headers: { Authorization: `Bearer ${accessToken}` },
+      });
+      const d = det.data.data || {};
+      resultado.push({ numero: d.numero, vendedorId: d.vendedor?.id, total: d.total });
+      await delay(400);
+    }
+    res.json(resultado);
+  } catch (err) {
+    res.status(500).json({ erro: err.response?.data || err.message });
+  }
+});
+
 // ─── Limpar cache manualmente ─────────────────────────────────────────
 app.get("/cache/limpar", (req, res) => {
   Object.keys(cache).forEach(k => delete cache[k]);
