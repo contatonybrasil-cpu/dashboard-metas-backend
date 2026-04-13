@@ -199,4 +199,24 @@ app.get("/status", (req, res) => {
 });
 
 const PORT = process.env.PORT || 3000;
-app.listen(PORT, () => console.log(`✅ Servidor rodando na porta ${PORT}`));
+app.listen(PORT, () => {
+  console.log(`✅ Servidor rodando na porta ${PORT}`);
+
+  // Auto-ping a cada 14 minutos para manter o servidor acordado
+  setInterval(async () => {
+    try {
+      await axios.get(`https://dashboard-metas.onrender.com/status`);
+      console.log("🏓 Auto-ping OK");
+    } catch (e) {
+      console.log("⚠️ Auto-ping falhou:", e.message);
+    }
+  }, 14 * 60 * 1000);
+
+  // Renovar token a cada 5 horas (token do Bling expira em 6h)
+  setInterval(async () => {
+    if (refreshToken) {
+      console.log("🔄 Renovando token automaticamente...");
+      await renovarToken();
+    }
+  }, 5 * 60 * 60 * 1000);
+});
