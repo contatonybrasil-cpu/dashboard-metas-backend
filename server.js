@@ -3,7 +3,7 @@ const axios = require("axios");
 const cors = require("cors");
 
 const app = express();
-app.use(cors());
+app.use(cors({ origin: "*" }));
 app.use(express.json());
 
 const CLIENT_ID = process.env.BLING_CLIENT_ID;
@@ -13,7 +13,8 @@ const REDIRECT_URI = process.env.REDIRECT_URI;
 let accessToken = null;
 let refreshToken = null;
 
-// ─── Autenticação OAuth2 ───────────────────────────────────────────────
+const delay = ms => new Promise(r => setTimeout(r, ms));
+
 app.get("/auth", (req, res) => {
   const url = `https://www.bling.com.br/Api/v3/oauth/authorize?response_type=code&client_id=${CLIENT_ID}&state=dashboard`;
   res.redirect(url);
@@ -25,17 +26,12 @@ app.get("/callback", async (req, res) => {
     const credentials = Buffer.from(`${CLIENT_ID}:${CLIENT_SECRET}`).toString("base64");
     const response = await axios.post(
       "https://www.bling.com.br/Api/v3/oauth/token",
-      new URLSearchParams({
-        grant_type: "authorization_code",
-        code,
-        redirect_uri: REDIRECT_URI,
-      }),
+      new URLSearchParams({ grant_type: "authorization_code", code, redirect_uri: REDIRECT_URI }),
       { headers: { Authorization: `Basic ${credentials}`, "Content-Type": "application/x-www-form-urlencoded" } }
     );
     accessToken = response.data.access_token;
     refreshToken = response.data.refresh_token;
-    res.send("✅ Conectado ao Bling com sucesso! Pode fechar esta aba e usar o dashboard.");
-    // Pré-carrega cache automaticamente após autenticação
+    res.send("Conectado ao Bling com sucesso! Pode fechar esta aba e usar o dashboard.");
     setTimeout(preCarregarCache, 2000);
   } catch (err) {
     console.error(err.response?.data || err.message);
@@ -58,14 +54,12 @@ async function renovarToken() {
   }
 }
 
-// ─── Cache ────────────────────────────────────────────────────────────
 const cache = {};
-const CACHE_TTL = 30 * 60 * 1000; // 30 minutos
+const CACHE_TTL = 30 * 60 * 1000;
 
-function cacheKey(inicio, fim) { return `${inicio}_${fim}`; }
+function cacheKey(inicio, fim) { return inicio + "_" + fim; }
 function cacheValido(key) { return cache[key] && (Date.now() - cache[key].ts) < CACHE_TTL; }
 
-// ─── Mapeamento de IDs de vendedor ───────────────────────────────────
 const VENDEDORES = {
   15596666568: "Guilherme",
   15596595092: "Felipe",
@@ -74,290 +68,173 @@ const VENDEDORES = {
 
 function nomeVendedor(id) {
   if (!id || id === 0) return "Gerentes";
-  return VENDEDORES[id] || `Vendedor ${id}`;
+  return VENDEDORES[id] || ("Vendedor " + id);
 }
 
-// ─── Buscar pedidos de venda por período ──────────────────────────────
-app.get("/vendas", async (req, res) => {
-  if (!accessToken) return res.status(401).json({ erro: "Não autenticado. Acesse /auth primeiro." });
+async function buscarDetalhe(id, tentativas) {
+  tentativas = tentativas || 3;
+  for (var i = 0; i < tentativas; i++) {
+    try {
+      const det = await axios.get("https://www.bling.com.br/Api/v3/pedidos/vendas/" + id, {
+        headers: { Authorization: "Bearer " + accessToken },
+      });
+      return det.data.data || {};
+    } catch (e) {
+      const tipo = e.response && e.response.data && e.response.data.error && e.response.data.error.type;
+      const status = e.response && e.response.status;
+      if (tipo === "TOO_MANY_REQUESTS" || status === 429) {
+        console.log("Rate limit pedido " + id + ", tentativa " + (i+1) + "/" + tentativas);
+        await delay(2000 * (i + 1));
+      } else {
+        break;
+      }
+    }
+  }
+  return {};
+}
 
-  const { dataInicio, dataFim } = req.query;
+async function buscarPedidos(inicio, fim) {
+  var pagina = 1;
+  var todos = [];
+  while (true) {
+    const response = await axios.get("https://www.bling.com.br/Api/v3/pedidos/vendas", {
+      headers: { Authorization: "Bearer " + accessToken },
+      params: { dataInicial: inicio, dataFinal: fim, pagina: pagina, limite: 100 },
+    });
+    const pedidos = response.data.data || [];
+    todos = todos.concat(pedidos);
+    if (pedidos.length < 100) break;
+    pagina++;
+    await delay(400);
+  }
+  return todos;
+}
+
+async function processarPedidos(todosPedidos) {
+  var porVendedor = {};
+  for (var i = 0; i < todosPedidos.length; i++) {
+    var pedido = todosPedidos[i];
+    const d = await buscarDetalhe(pedido.id);
+    const codigoVendedor = d.vendedor && d.vendedor.id ? d.vendedor.id : 0;
+    var pecas = 0;
+    if (d.itens) {
+      for (var j = 0; j < d.itens.length; j++) {
+        pecas += Number(d.itens[j].quantidade) || 0;
+      }
+    }
+    await delay(400);
+    const nome = nomeVendedor(codigoVendedor);
+    if (!porVendedor[nome]) porVendedor[nome] = { nome: nome, faturamento: 0, pedidos: 0, pecas: 0 };
+    porVendedor[nome].faturamento += pedido.total || 0;
+    porVendedor[nome].pedidos += 1;
+    porVendedor[nome].pecas += pecas;
+  }
+  return Object.values(porVendedor).map(function(v) {
+    return {
+      nome: v.nome,
+      faturamento: +v.faturamento.toFixed(2),
+      pedidos: v.pedidos,
+      pecas: v.pecas,
+      ticketMedio: v.pedidos > 0 ? +(v.faturamento / v.pedidos).toFixed(2) : 0,
+    };
+  });
+}
+
+app.get("/vendas", async (req, res) => {
+  if (!accessToken) return res.status(401).json({ erro: "Nao autenticado. Acesse /auth primeiro." });
+  const dataInicio = req.query.dataInicio;
+  const dataFim = req.query.dataFim;
   const inicio = dataInicio || new Date(new Date().getFullYear(), new Date().getMonth(), 1).toISOString().slice(0, 10);
   const fim = dataFim || new Date().toISOString().slice(0, 10);
   const key = cacheKey(inicio, fim);
-
-  // Retorna cache se válido
   if (cacheValido(key)) {
-    console.log(`Cache hit: ${key}`);
+    console.log("Cache hit: " + key);
     return res.json(cache[key].data);
   }
-
-  console.log(`Cache miss: ${key} — buscando no Bling...`);
-
+  console.log("Cache miss: " + key);
   try {
-    let pagina = 1;
-    let todosPedidos = [];
-
-    const delay = ms => new Promise(r => setTimeout(r, ms));
-
-    while (true) {
-      const response = await axios.get("https://www.bling.com.br/Api/v3/pedidos/vendas", {
-        headers: { Authorization: `Bearer ${accessToken}` },
-        params: { dataInicial: inicio, dataFinal: fim, pagina, limite: 100 },
-      });
-
-      const pedidos = response.data.data || [];
-      todosPedidos = [...todosPedidos, ...pedidos];
-      if (pedidos.length < 100) break;
-      pagina++;
-      await delay(400); // respeita o limite de 3 req/segundo do Bling
-    }
-
-    // Buscar detalhes de cada pedido com retry automático
-    async function buscarDetalhePedido(id, tentativas = 3) {
-      for (let i = 0; i < tentativas; i++) {
-        try {
-          const det = await axios.get(`https://www.bling.com.br/Api/v3/pedidos/vendas/${id}`, {
-            headers: { Authorization: `Bearer ${accessToken}` },
-          });
-          return det.data.data || {};
-        } catch (e) {
-          const status = e.response?.status;
-          const tipo = e.response?.data?.error?.type;
-          if (tipo === "TOO_MANY_REQUESTS" || status === 429) {
-            console.log(`Rate limit no pedido ${id}, tentativa ${i+1}/${tentativas}. Aguardando...`);
-            await delay(2000 * (i + 1)); // espera 2s, 4s, 6s
-          } else {
-            break; // erro diferente, não tenta de novo
-          }
-        }
-      }
-      return {};
-    }
-
-    const porVendedor = {};
-    for (const pedido of todosPedidos) {
-      const d = await buscarDetalhePedido(pedido.id);
-      const codigoVendedor = d.vendedor?.id || 0;
-      const pecas = (d.itens || []).reduce((s, i) => s + (Number(i.quantidade) || 0), 0);
-      await delay(400);
-
-      const nome = nomeVendedor(codigoVendedor);
-      if (!porVendedor[nome]) {
-        porVendedor[nome] = { nome, faturamento: 0, pedidos: 0, pecas: 0 };
-      }
-      const valor = pedido.total || 0;
-      porVendedor[nome].faturamento += valor;
-      porVendedor[nome].pedidos += 1;
-      porVendedor[nome].pecas += pecas;
-    }
-
-    // Calcular ticket médio
-    const resultado = Object.values(porVendedor).map(v => ({
-      ...v,
-      ticketMedio: v.pedidos > 0 ? +(v.faturamento / v.pedidos).toFixed(2) : 0,
-      faturamento: +v.faturamento.toFixed(2),
-    }));
-
-    const resposta = { periodo: { inicio, fim }, vendedores: resultado, totalPedidos: todosPedidos.length };
+    const todosPedidos = await buscarPedidos(inicio, fim);
+    const vendedores = await processarPedidos(todosPedidos);
+    const resposta = { periodo: { inicio: inicio, fim: fim }, vendedores: vendedores, totalPedidos: todosPedidos.length };
     cache[key] = { data: resposta, ts: Date.now() };
     res.json(resposta);
   } catch (err) {
-    if (err.response?.status === 401) {
+    if (err.response && err.response.status === 401) {
       await renovarToken();
       return res.status(401).json({ erro: "Token renovado, tente novamente." });
     }
-    const detalhe = err.response?.data || err.message;
+    const detalhe = err.response && err.response.data ? err.response.data : err.message;
     console.error("ERRO BLING:", JSON.stringify(detalhe));
-    res.status(500).json({ erro: "Erro ao buscar vendas no Bling.", detalhe });
+    res.status(500).json({ erro: "Erro ao buscar vendas no Bling.", detalhe: detalhe });
   }
 });
 
-// ─── Debug: ver detalhe de pedido por número ─────────────────────────
 app.get("/debug/:numero", async (req, res) => {
-  if (!accessToken) return res.status(401).json({ erro: "Não autenticado." });
+  if (!accessToken) return res.status(401).json({ erro: "Nao autenticado." });
   try {
-    // Busca pelo número do pedido
     const lista = await axios.get("https://www.bling.com.br/Api/v3/pedidos/vendas", {
-      headers: { Authorization: `Bearer ${accessToken}` },
+      headers: { Authorization: "Bearer " + accessToken },
       params: { numero: req.params.numero, pagina: 1, limite: 1 },
     });
-    const pedido = lista.data.data?.[0];
-    if (!pedido) return res.json({ erro: "Pedido não encontrado" });
-
-    const detalhe = await axios.get(`https://www.bling.com.br/Api/v3/pedidos/vendas/${pedido.id}`, {
-      headers: { Authorization: `Bearer ${accessToken}` },
-    });
-    const d = detalhe.data.data || {};
+    const pedido = lista.data.data && lista.data.data[0];
+    if (!pedido) return res.json({ erro: "Pedido nao encontrado" });
+    const d = await buscarDetalhe(pedido.id);
     res.json({ numero: d.numero, vendedor: d.vendedor, total: d.total, totalProdutos: d.totalProdutos });
   } catch (err) {
-    res.status(500).json({ erro: err.response?.data || err.message });
+    res.status(500).json({ erro: err.response && err.response.data ? err.response.data : err.message });
   }
 });
 
-// ─── Debug: ver detalhe completo de um pedido por ID ─────────────────
-app.get("/debug", async (req, res) => {
-  if (!accessToken) return res.status(401).json({ erro: "Não autenticado." });
-  try {
-    // Pega o ID do primeiro pedido de abril
-    const lista = await axios.get("https://www.bling.com.br/Api/v3/pedidos/vendas", {
-      headers: { Authorization: `Bearer ${accessToken}` },
-      params: { dataInicial: "2026-04-01", dataFinal: "2026-04-12", pagina: 1, limite: 1 },
-    });
-    const primeiroPedido = lista.data.data?.[0];
-    if (!primeiroPedido) return res.json({ erro: "Nenhum pedido encontrado" });
-
-    // Busca o detalhe completo pelo ID
-    const detalhe = await axios.get(`https://www.bling.com.br/Api/v3/pedidos/vendas/${primeiroPedido.id}`, {
-      headers: { Authorization: `Bearer ${accessToken}` },
-    });
-    res.json(detalhe.data);
-  } catch (err) {
-    res.status(500).json({ erro: err.response?.data || err.message });
-  }
-});
-
-// ─── Debug: ver pedidos e seus vendedores ────────────────────────────
-app.get("/sem-vendedor", async (req, res) => {
-  if (!accessToken) return res.status(401).json({ erro: "Não autenticado." });
-  const delay = ms => new Promise(r => setTimeout(r, ms));
-  const inicio = req.query.dataInicio || "2026-04-01";
-  const fim = req.query.dataFim || new Date().toISOString().slice(0, 10);
-  try {
-    const lista = await axios.get("https://www.bling.com.br/Api/v3/pedidos/vendas", {
-      headers: { Authorization: `Bearer ${accessToken}` },
-      params: { dataInicial: inicio, dataFinal: fim, pagina: 1, limite: 10 },
-    });
-    const pedidos = lista.data.data || [];
-    const resultado = [];
-    for (const p of pedidos) {
-      const det = await axios.get(`https://www.bling.com.br/Api/v3/pedidos/vendas/${p.id}`, {
-        headers: { Authorization: `Bearer ${accessToken}` },
-      });
-      const d = det.data.data || {};
-      resultado.push({ numero: d.numero, vendedorId: d.vendedor?.id, total: d.total });
-      await delay(400);
-    }
-    res.json(resultado);
-  } catch (err) {
-    res.status(500).json({ erro: err.response?.data || err.message });
-  }
-});
-
-// ─── Limpar cache manualmente ─────────────────────────────────────────
 app.get("/cache/limpar", (req, res) => {
-  Object.keys(cache).forEach(k => delete cache[k]);
-  res.json({ ok: true, msg: "Cache limpo! Próxima consulta vai buscar dados frescos do Bling." });
+  Object.keys(cache).forEach(function(k) { delete cache[k]; });
+  res.json({ ok: true, msg: "Cache limpo!" });
 });
 
-// ─── Status ───────────────────────────────────────────────────────────
 app.get("/status", (req, res) => {
-  const caches = Object.keys(cache).map(k => ({
-    periodo: k,
-    idadeMinutos: Math.round((Date.now() - cache[k].ts) / 60000),
-    valido: cacheValido(k),
-  }));
-  res.json({ ok: true, autenticado: !!accessToken, caches });
+  const caches = Object.keys(cache).map(function(k) {
+    return { periodo: k, idadeMinutos: Math.round((Date.now() - cache[k].ts) / 60000), valido: cacheValido(k) };
+  });
+  res.json({ ok: true, autenticado: !!accessToken, caches: caches });
 });
 
-// ─── Pré-carregar cache em background ────────────────────────────────
 async function preCarregarCache() {
   if (!accessToken) return;
   const inicio = new Date(new Date().getFullYear(), new Date().getMonth(), 1).toISOString().slice(0, 10);
   const fim = new Date().toISOString().slice(0, 10);
   const key = cacheKey(inicio, fim);
-  if (cacheValido(key)) { console.log("🟢 Cache já válido, pulando pré-carregamento."); return; }
-
-  console.log("🔄 Pré-carregando cache do mês atual...");
-  const delay = ms => new Promise(r => setTimeout(r, ms));
-
+  if (cacheValido(key)) { console.log("Cache ja valido."); return; }
+  console.log("Pre-carregando cache...");
   try {
-    let pagina = 1;
-    let todosPedidos = [];
-
-    while (true) {
-      const response = await axios.get("https://www.bling.com.br/Api/v3/pedidos/vendas", {
-        headers: { Authorization: `Bearer ${accessToken}` },
-        params: { dataInicial: inicio, dataFinal: fim, pagina, limite: 100 },
-      });
-      const pedidos = response.data.data || [];
-      todosPedidos = [...todosPedidos, ...pedidos];
-      if (pedidos.length < 100) break;
-      pagina++;
-      await delay(400);
-    }
-
-    const porVendedor = {};
-
-    async function buscarDetalhePedidoBG(id, tentativas = 3) {
-      for (let i = 0; i < tentativas; i++) {
-        try {
-          const det = await axios.get(`https://www.bling.com.br/Api/v3/pedidos/vendas/${id}`, {
-            headers: { Authorization: `Bearer ${accessToken}` },
-          });
-          return det.data.data || {};
-        } catch (e) {
-          const tipo = e.response?.data?.error?.type;
-          if (tipo === "TOO_MANY_REQUESTS" || e.response?.status === 429) {
-            await delay(2000 * (i + 1));
-          } else { break; }
-        }
-      }
-      return {};
-    }
-
-    for (const pedido of todosPedidos) {
-      const d = await buscarDetalhePedidoBG(pedido.id);
-      const codigoVendedor = d.vendedor?.id || 0;
-      const pecas = (d.itens || []).reduce((s, i) => s + (Number(i.quantidade) || 0), 0);
-      await delay(400);
-
-      const nome = nomeVendedor(codigoVendedor);
-      if (!porVendedor[nome]) porVendedor[nome] = { nome, faturamento: 0, pedidos: 0, pecas: 0 };
-      const valor = pedido.total || 0;
-      porVendedor[nome].faturamento += valor;
-      porVendedor[nome].pedidos += 1;
-      porVendedor[nome].pecas += pecas;
-    }
-
-    const resultado = Object.values(porVendedor).map(v => ({
-      ...v,
-      ticketMedio: v.pedidos > 0 ? +(v.faturamento / v.pedidos).toFixed(2) : 0,
-      faturamento: +v.faturamento.toFixed(2),
-    }));
-
-    const resposta = { periodo: { inicio, fim }, vendedores: resultado, totalPedidos: todosPedidos.length };
+    const todosPedidos = await buscarPedidos(inicio, fim);
+    const vendedores = await processarPedidos(todosPedidos);
+    const resposta = { periodo: { inicio: inicio, fim: fim }, vendedores: vendedores, totalPedidos: todosPedidos.length };
     cache[key] = { data: resposta, ts: Date.now() };
-    console.log(`✅ Cache pré-carregado! ${todosPedidos.length} pedidos processados.`);
+    console.log("Cache pre-carregado! " + todosPedidos.length + " pedidos.");
   } catch (e) {
-    console.error("❌ Erro no pré-carregamento:", e.message);
+    console.error("Erro no pre-carregamento:", e.message);
   }
 }
 
 const PORT = process.env.PORT || 3000;
-app.listen(PORT, () => {
-  console.log(`✅ Servidor rodando na porta ${PORT}`);
+app.listen(PORT, function() {
+  console.log("Servidor rodando na porta " + PORT);
 
-  // Auto-ping a cada 14 minutos para manter o servidor acordado
-  setInterval(async () => {
+  setInterval(async function() {
     try {
-      await axios.get(`https://dashboard-metas.onrender.com/status`);
-      console.log("🏓 Auto-ping OK");
+      await axios.get("https://dashboard-metas.onrender.com/status");
+      console.log("Auto-ping OK");
     } catch (e) {
-      console.log("⚠️ Auto-ping falhou:", e.message);
+      console.log("Auto-ping falhou:", e.message);
     }
   }, 14 * 60 * 1000);
 
-  // Renovar token a cada 5 horas (token do Bling expira em 6h)
-  setInterval(async () => {
+  setInterval(async function() {
     if (refreshToken) {
-      console.log("🔄 Renovando token automaticamente...");
+      console.log("Renovando token...");
       await renovarToken();
-      // Após renovar token, pré-carrega cache
       setTimeout(preCarregarCache, 3000);
     }
   }, 5 * 60 * 60 * 1000);
 
-  // Pré-carregar cache a cada 30 minutos
-  setInterval(() => preCarregarCache(), 30 * 60 * 1000);
+  setInterval(function() { preCarregarCache(); }, 30 * 60 * 1000);
 });
