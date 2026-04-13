@@ -35,6 +35,8 @@ app.get("/callback", async (req, res) => {
     accessToken = response.data.access_token;
     refreshToken = response.data.refresh_token;
     res.send("✅ Conectado ao Bling com sucesso! Pode fechar esta aba e usar o dashboard.");
+    // Pré-carrega cache automaticamente após autenticação
+    setTimeout(preCarregarCache, 2000);
   } catch (err) {
     console.error(err.response?.data || err.message);
     res.status(500).send("Erro ao autenticar com o Bling.");
@@ -220,6 +222,69 @@ app.get("/status", (req, res) => {
   res.json({ ok: true, autenticado: !!accessToken, caches });
 });
 
+// ─── Pré-carregar cache em background ────────────────────────────────
+async function preCarregarCache() {
+  if (!accessToken) return;
+  const inicio = new Date(new Date().getFullYear(), new Date().getMonth(), 1).toISOString().slice(0, 10);
+  const fim = new Date().toISOString().slice(0, 10);
+  const key = cacheKey(inicio, fim);
+  if (cacheValido(key)) { console.log("🟢 Cache já válido, pulando pré-carregamento."); return; }
+
+  console.log("🔄 Pré-carregando cache do mês atual...");
+  const delay = ms => new Promise(r => setTimeout(r, ms));
+
+  try {
+    let pagina = 1;
+    let todosPedidos = [];
+
+    while (true) {
+      const response = await axios.get("https://www.bling.com.br/Api/v3/pedidos/vendas", {
+        headers: { Authorization: `Bearer ${accessToken}` },
+        params: { dataInicial: inicio, dataFinal: fim, pagina, limite: 100 },
+      });
+      const pedidos = response.data.data || [];
+      todosPedidos = [...todosPedidos, ...pedidos];
+      if (pedidos.length < 100) break;
+      pagina++;
+      await delay(400);
+    }
+
+    const porVendedor = {};
+    for (const pedido of todosPedidos) {
+      let codigoVendedor = 0;
+      let pecas = 0;
+      try {
+        const det = await axios.get(`https://www.bling.com.br/Api/v3/pedidos/vendas/${pedido.id}`, {
+          headers: { Authorization: `Bearer ${accessToken}` },
+        });
+        const d = det.data.data || {};
+        codigoVendedor = d.vendedor?.id || 0;
+        pecas = (d.itens || []).reduce((s, i) => s + (Number(i.quantidade) || 0), 0);
+        await delay(400);
+      } catch (e) {}
+
+      const nome = nomeVendedor(codigoVendedor);
+      if (!porVendedor[nome]) porVendedor[nome] = { nome, faturamento: 0, pedidos: 0, pecas: 0 };
+      const valor = pedido.totalProdutos || pedido.total || 0;
+      porVendedor[nome].faturamento += valor;
+      porVendedor[nome].pedidos += 1;
+      porVendedor[nome].pecas += pecas;
+    }
+
+    const resultado = Object.values(porVendedor).map(v => ({
+      ...v,
+      ticketMedio: v.pedidos > 0 ? +(v.faturamento / v.pedidos).toFixed(2) : 0,
+      faturamento: +v.faturamento.toFixed(2),
+    }));
+
+    const resposta = { periodo: { inicio, fim }, vendedores: resultado, totalPedidos: todosPedidos.length };
+    cache[key] = { data: resposta, ts: Date.now() };
+    console.log(`✅ Cache pré-carregado! ${todosPedidos.length} pedidos processados.`);
+  } catch (e) {
+    console.error("❌ Erro no pré-carregamento:", e.message);
+  }
+}
+
 const PORT = process.env.PORT || 3000;
 app.listen(PORT, () => {
   console.log(`✅ Servidor rodando na porta ${PORT}`);
@@ -239,6 +304,11 @@ app.listen(PORT, () => {
     if (refreshToken) {
       console.log("🔄 Renovando token automaticamente...");
       await renovarToken();
+      // Após renovar token, pré-carrega cache
+      setTimeout(preCarregarCache, 3000);
     }
   }, 5 * 60 * 60 * 1000);
+
+  // Pré-carregar cache a cada 30 minutos
+  setInterval(() => preCarregarCache(), 30 * 60 * 1000);
 });
