@@ -160,6 +160,28 @@ app.get("/vendas", async (req, res) => {
   }
 });
 
+// ─── Debug: ver detalhe de pedido por número ─────────────────────────
+app.get("/debug/:numero", async (req, res) => {
+  if (!accessToken) return res.status(401).json({ erro: "Não autenticado." });
+  try {
+    // Busca pelo número do pedido
+    const lista = await axios.get("https://www.bling.com.br/Api/v3/pedidos/vendas", {
+      headers: { Authorization: `Bearer ${accessToken}` },
+      params: { numero: req.params.numero, pagina: 1, limite: 1 },
+    });
+    const pedido = lista.data.data?.[0];
+    if (!pedido) return res.json({ erro: "Pedido não encontrado" });
+
+    const detalhe = await axios.get(`https://www.bling.com.br/Api/v3/pedidos/vendas/${pedido.id}`, {
+      headers: { Authorization: `Bearer ${accessToken}` },
+    });
+    const d = detalhe.data.data || {};
+    res.json({ numero: d.numero, vendedor: d.vendedor, total: d.total, totalProdutos: d.totalProdutos });
+  } catch (err) {
+    res.status(500).json({ erro: err.response?.data || err.message });
+  }
+});
+
 // ─── Debug: ver detalhe completo de um pedido por ID ─────────────────
 app.get("/debug", async (req, res) => {
   if (!accessToken) return res.status(401).json({ erro: "Não autenticado." });
