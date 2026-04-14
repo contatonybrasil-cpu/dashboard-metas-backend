@@ -99,7 +99,7 @@ async function buscarPedidos(inicio, fim) {
   while (true) {
     const response = await axios.get("https://www.bling.com.br/Api/v3/pedidos/vendas", {
       headers: { Authorization: "Bearer " + accessToken },
-      params: { dataInicial: inicio, dataFinal: fim, pagina: pagina, limite: 100 },
+      params: { dataInicial: inicio, dataFinal: fim, pagina: pagina, limite: 100, idSituacao: 9 },
     });
     const pedidos = response.data.data || [];
     todos = todos.concat(pedidos);
