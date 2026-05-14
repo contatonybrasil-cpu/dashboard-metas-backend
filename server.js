@@ -16,7 +16,7 @@ let refreshToken = null;
 const delay = ms => new Promise(r => setTimeout(r, ms));
 
 app.get("/auth", (req, res) => {
-  const url = `https://www.bling.com.br/Api/v3/oauth/authorize?response_type=code&client_id=${CLIENT_ID}&state=dashboard`;
+  const url = `https://api.bling.com.br/Api/v3/oauth/authorize?response_type=code&client_id=${CLIENT_ID}&state=dashboard`;
   res.redirect(url);
 });
 
@@ -25,7 +25,7 @@ app.get("/callback", async (req, res) => {
   try {
     const credentials = Buffer.from(`${CLIENT_ID}:${CLIENT_SECRET}`).toString("base64");
     const response = await axios.post(
-      "https://www.bling.com.br/Api/v3/oauth/token",
+      "https://api.bling.com.br/Api/v3/oauth/token",
       new URLSearchParams({ grant_type: "authorization_code", code, redirect_uri: REDIRECT_URI }),
       { headers: { Authorization: `Basic ${credentials}`, "Content-Type": "application/x-www-form-urlencoded" } }
     );
@@ -43,7 +43,7 @@ async function renovarToken() {
   try {
     const credentials = Buffer.from(`${CLIENT_ID}:${CLIENT_SECRET}`).toString("base64");
     const response = await axios.post(
-      "https://www.bling.com.br/Api/v3/oauth/token",
+      "https://api.bling.com.br/Api/v3/oauth/token",
       new URLSearchParams({ grant_type: "refresh_token", refresh_token: refreshToken }),
       { headers: { Authorization: `Basic ${credentials}`, "Content-Type": "application/x-www-form-urlencoded" } }
     );
@@ -64,6 +64,7 @@ const VENDEDORES = {
   15596666568: "Guilherme",
   15596595092: "Felipe",
   15596218776: "Giovana",
+  15596662555: "Ítalo",
 };
 
 function nomeVendedor(id) {
@@ -75,7 +76,7 @@ async function buscarDetalhe(id, tentativas) {
   tentativas = tentativas || 3;
   for (var i = 0; i < tentativas; i++) {
     try {
-      const det = await axios.get("https://www.bling.com.br/Api/v3/pedidos/vendas/" + id, {
+      const det = await axios.get("https://api.bling.com.br/Api/v3/pedidos/vendas/" + id, {
         headers: { Authorization: "Bearer " + accessToken },
       });
       return det.data.data || {};
@@ -93,11 +94,31 @@ async function buscarDetalhe(id, tentativas) {
   return {};
 }
 
-async function buscarPedidos(inicio, fim) {
+// ─── Buscar pedidos por vendedor (novo modelo rápido) ─────────────────
+async function buscarPedidosPorVendedor(idVendedor, inicio, fim) {
   var pagina = 1;
   var todos = [];
   while (true) {
-    const response = await axios.get("https://www.bling.com.br/Api/v3/pedidos/vendas", {
+    const response = await axios.get("https://api.bling.com.br/Api/v3/pedidos/vendas", {
+      headers: { Authorization: "Bearer " + accessToken },
+      params: { dataInicial: inicio, dataFinal: fim, pagina: pagina, limite: 100, idSituacao: 9, idVendedor: idVendedor },
+    });
+    const pedidos = response.data.data || [];
+    todos = todos.concat(pedidos);
+    if (pedidos.length < 100) break;
+    pagina++;
+    await delay(400);
+  }
+  return todos;
+}
+
+// ─── Buscar pedidos sem vendedor (Gerentes) ───────────────────────────
+async function buscarPedidosSemVendedor(inicio, fim) {
+  // Busca todos e filtra os que não têm vendedor mapeado
+  var pagina = 1;
+  var todos = [];
+  while (true) {
+    const response = await axios.get("https://api.bling.com.br/Api/v3/pedidos/vendas", {
       headers: { Authorization: "Bearer " + accessToken },
       params: { dataInicial: inicio, dataFinal: fim, pagina: pagina, limite: 100, idSituacao: 9 },
     });
@@ -110,34 +131,76 @@ async function buscarPedidos(inicio, fim) {
   return todos;
 }
 
-async function processarPedidos(todosPedidos) {
-  var porVendedor = {};
-  for (var i = 0; i < todosPedidos.length; i++) {
-    var pedido = todosPedidos[i];
-    const d = await buscarDetalhe(pedido.id);
-    const codigoVendedor = d.vendedor && d.vendedor.id ? d.vendedor.id : 0;
-    var pecas = 0;
-    if (d.itens) {
-      for (var j = 0; j < d.itens.length; j++) {
-        pecas += Number(d.itens[j].quantidade) || 0;
-      }
-    }
-    await delay(400);
-    const nome = nomeVendedor(codigoVendedor);
-    if (!porVendedor[nome]) porVendedor[nome] = { nome: nome, faturamento: 0, pedidos: 0, pecas: 0 };
-    porVendedor[nome].faturamento += pedido.total || 0;
-    porVendedor[nome].pedidos += 1;
-    porVendedor[nome].pecas += pecas;
+// ─── Buscar peças em lotes paralelos de 3 ────────────────────────────
+async function buscarPecasLote(pedidos) {
+  var resultado = new Array(pedidos.length).fill(0);
+  var LOTE = 3;
+  for (var i = 0; i < pedidos.length; i += LOTE) {
+    var lote = pedidos.slice(i, i + LOTE);
+    var promessas = lote.map(function(p) {
+      return buscarDetalhe(p.id).then(function(d) {
+        return (d.itens || []).reduce(function(s, item) { return s + (Number(item.quantidade) || 0); }, 0);
+      });
+    });
+    var pecasLote = await Promise.all(promessas);
+    pecasLote.forEach(function(pecas, j) { resultado[i + j] = pecas; });
+    await delay(450);
   }
-  return Object.values(porVendedor).map(function(v) {
-    return {
-      nome: v.nome,
-      faturamento: +v.faturamento.toFixed(2),
-      pedidos: v.pedidos,
-      pecas: v.pecas,
-      ticketMedio: v.pedidos > 0 ? +(v.faturamento / v.pedidos).toFixed(2) : 0,
-    };
-  });
+  return resultado;
+}
+
+async function buscarPedidos(inicio, fim) {
+  var idsVendedores = Object.keys(VENDEDORES).map(Number);
+
+  // Busca por vendedor em paralelo (respeitando rate limit — sequencial entre vendedores)
+  var todosPedidos = [];
+  var pedidosPorVendedor = {};
+
+  for (var k = 0; k < idsVendedores.length; k++) {
+    var idV = idsVendedores[k];
+    var nome = VENDEDORES[idV];
+    var peds = await buscarPedidosPorVendedor(idV, inicio, fim);
+    pedidosPorVendedor[nome] = peds;
+    todosPedidos = todosPedidos.concat(peds);
+    await delay(400);
+  }
+
+  // Busca todos os pedidos para identificar os sem vendedor (Gerentes)
+  var todosGeral = await buscarPedidosSemVendedor(inicio, fim);
+  var idsComVendedor = new Set(todosPedidos.map(function(p) { return p.id; }));
+  var pedidosGerentes = todosGeral.filter(function(p) { return !idsComVendedor.has(p.id); });
+  pedidosPorVendedor["Gerentes"] = pedidosGerentes;
+  var totalGeral = todosGeral.length;
+
+  // Retorna estrutura para processamento
+  return { pedidosPorVendedor: pedidosPorVendedor, totalPedidos: totalGeral };
+}
+
+async function processarPedidos(resultado) {
+  var pedidosPorVendedor = resultado.pedidosPorVendedor;
+  var totalPedidos = resultado.totalPedidos;
+  var vendedores = [];
+
+  for (var nome in pedidosPorVendedor) {
+    var peds = pedidosPorVendedor[nome];
+    if (peds.length === 0) continue;
+
+    var faturamento = peds.reduce(function(s, p) { return s + (p.total || 0); }, 0);
+
+    // Busca peças em lotes paralelos
+    var pecasArr = await buscarPecasLote(peds);
+    var pecas = pecasArr.reduce(function(s, n) { return s + n; }, 0);
+
+    vendedores.push({
+      nome: nome,
+      faturamento: +faturamento.toFixed(2),
+      pedidos: peds.length,
+      pecas: pecas,
+      ticketMedio: peds.length > 0 ? +(faturamento / peds.length).toFixed(2) : 0,
+    });
+  }
+
+  return { vendedores: vendedores, totalPedidos: totalPedidos };
 }
 
 app.get("/vendas", async (req, res) => {
@@ -153,9 +216,9 @@ app.get("/vendas", async (req, res) => {
   }
   console.log("Cache miss: " + key);
   try {
-    const todosPedidos = await buscarPedidos(inicio, fim);
-    const vendedores = await processarPedidos(todosPedidos);
-    const resposta = { periodo: { inicio: inicio, fim: fim }, vendedores: vendedores, totalPedidos: todosPedidos.length };
+    const resultado = await buscarPedidos(inicio, fim);
+    const { vendedores, totalPedidos } = await processarPedidos(resultado);
+    const resposta = { periodo: { inicio: inicio, fim: fim }, vendedores: vendedores, totalPedidos: totalPedidos };
     cache[key] = { data: resposta, ts: Date.now() };
     res.json(resposta);
   } catch (err) {
@@ -172,7 +235,7 @@ app.get("/vendas", async (req, res) => {
 app.get("/debug/:numero", async (req, res) => {
   if (!accessToken) return res.status(401).json({ erro: "Nao autenticado." });
   try {
-    const lista = await axios.get("https://www.bling.com.br/Api/v3/pedidos/vendas", {
+    const lista = await axios.get("https://api.bling.com.br/Api/v3/pedidos/vendas", {
       headers: { Authorization: "Bearer " + accessToken },
       params: { numero: req.params.numero, pagina: 1, limite: 1 },
     });
@@ -205,11 +268,11 @@ async function preCarregarCache() {
   if (cacheValido(key)) { console.log("Cache ja valido."); return; }
   console.log("Pre-carregando cache...");
   try {
-    const todosPedidos = await buscarPedidos(inicio, fim);
-    const vendedores = await processarPedidos(todosPedidos);
-    const resposta = { periodo: { inicio: inicio, fim: fim }, vendedores: vendedores, totalPedidos: todosPedidos.length };
+    const resultado = await buscarPedidos(inicio, fim);
+    const { vendedores, totalPedidos } = await processarPedidos(resultado);
+    const resposta = { periodo: { inicio: inicio, fim: fim }, vendedores: vendedores, totalPedidos: totalPedidos };
     cache[key] = { data: resposta, ts: Date.now() };
-    console.log("Cache pre-carregado! " + todosPedidos.length + " pedidos.");
+    console.log("Cache pre-carregado! " + totalPedidos + " pedidos.");
   } catch (e) {
     console.error("Erro no pre-carregamento:", e.message);
   }
