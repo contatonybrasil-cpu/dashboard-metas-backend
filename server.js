@@ -67,9 +67,19 @@ const VENDEDORES = {
   15596662555: "Ítalo",
 };
 
+const LOJAS = {
+  203654110: "Parque do Povo",
+  203777302: "Prudenshopping",
+};
+
 function nomeVendedor(id) {
   if (!id || id === 0) return "Gerentes";
   return VENDEDORES[id] || ("Vendedor " + id);
+}
+
+function nomeLoja(id) {
+  if (!id) return "Sem loja";
+  return LOJAS[id] || ("Loja " + id);
 }
 
 async function buscarDetalhe(id, tentativas) {
@@ -94,14 +104,16 @@ async function buscarDetalhe(id, tentativas) {
   return {};
 }
 
-// ─── Buscar pedidos por vendedor (novo modelo rápido) ─────────────────
-async function buscarPedidosPorVendedor(idVendedor, inicio, fim) {
+// ─── Buscar pedidos por vendedor e loja ──────────────────────────────
+async function buscarPedidosPorVendedor(idVendedor, inicio, fim, idLoja) {
   var pagina = 1;
   var todos = [];
+  var params = { dataInicial: inicio, dataFinal: fim, pagina: pagina, limite: 100, idSituacao: 9, idVendedor: idVendedor };
+  if (idLoja) params.idLoja = idLoja;
   while (true) {
     const response = await axios.get("https://api.bling.com.br/Api/v3/pedidos/vendas", {
       headers: { Authorization: "Bearer " + accessToken },
-      params: { dataInicial: inicio, dataFinal: fim, pagina: pagina, limite: 100, idSituacao: 9, idVendedor: idVendedor },
+      params: Object.assign({}, params, { pagina: pagina }),
     });
     const pedidos = response.data.data || [];
     todos = todos.concat(pedidos);
@@ -113,14 +125,15 @@ async function buscarPedidosPorVendedor(idVendedor, inicio, fim) {
 }
 
 // ─── Buscar pedidos sem vendedor (Gerentes) ───────────────────────────
-async function buscarPedidosSemVendedor(inicio, fim) {
-  // Busca todos e filtra os que não têm vendedor mapeado
+async function buscarPedidosSemVendedor(inicio, fim, idLoja) {
   var pagina = 1;
   var todos = [];
+  var params = { dataInicial: inicio, dataFinal: fim, pagina: pagina, limite: 100, idSituacao: 9 };
+  if (idLoja) params.idLoja = idLoja;
   while (true) {
     const response = await axios.get("https://api.bling.com.br/Api/v3/pedidos/vendas", {
       headers: { Authorization: "Bearer " + accessToken },
-      params: { dataInicial: inicio, dataFinal: fim, pagina: pagina, limite: 100, idSituacao: 9 },
+      params: Object.assign({}, params, { pagina: pagina }),
     });
     const pedidos = response.data.data || [];
     todos = todos.concat(pedidos);
@@ -149,31 +162,26 @@ async function buscarPecasLote(pedidos) {
   return resultado;
 }
 
-async function buscarPedidos(inicio, fim) {
+async function buscarPedidos(inicio, fim, idLoja) {
   var idsVendedores = Object.keys(VENDEDORES).map(Number);
-
-  // Busca por vendedor em paralelo (respeitando rate limit — sequencial entre vendedores)
   var todosPedidos = [];
   var pedidosPorVendedor = {};
 
   for (var k = 0; k < idsVendedores.length; k++) {
     var idV = idsVendedores[k];
     var nome = VENDEDORES[idV];
-    var peds = await buscarPedidosPorVendedor(idV, inicio, fim);
+    var peds = await buscarPedidosPorVendedor(idV, inicio, fim, idLoja);
     pedidosPorVendedor[nome] = peds;
     todosPedidos = todosPedidos.concat(peds);
     await delay(400);
   }
 
-  // Busca todos os pedidos para identificar os sem vendedor (Gerentes)
-  var todosGeral = await buscarPedidosSemVendedor(inicio, fim);
+  var todosGeral = await buscarPedidosSemVendedor(inicio, fim, idLoja);
   var idsComVendedor = new Set(todosPedidos.map(function(p) { return p.id; }));
   var pedidosGerentes = todosGeral.filter(function(p) { return !idsComVendedor.has(p.id); });
   pedidosPorVendedor["Gerentes"] = pedidosGerentes;
-  var totalGeral = todosGeral.length;
 
-  // Retorna estrutura para processamento
-  return { pedidosPorVendedor: pedidosPorVendedor, totalPedidos: totalGeral };
+  return { pedidosPorVendedor: pedidosPorVendedor, totalPedidos: todosGeral.length };
 }
 
 async function processarPedidos(resultado) {
@@ -207,18 +215,20 @@ app.get("/vendas", async (req, res) => {
   if (!accessToken) return res.status(401).json({ erro: "Nao autenticado. Acesse /auth primeiro." });
   const dataInicio = req.query.dataInicio;
   const dataFim = req.query.dataFim;
+  const loja = req.query.loja || null;
   const inicio = dataInicio || new Date(new Date().getFullYear(), new Date().getMonth(), 1).toISOString().slice(0, 10);
   const fim = dataFim || new Date().toISOString().slice(0, 10);
-  const key = cacheKey(inicio, fim);
+  const key = cacheKey(inicio, fim) + (loja ? "_" + loja : "_todas");
   if (cacheValido(key)) {
     console.log("Cache hit: " + key);
     return res.json(cache[key].data);
   }
   console.log("Cache miss: " + key);
   try {
-    const resultado = await buscarPedidos(inicio, fim);
+    const resultado = await buscarPedidos(inicio, fim, loja);
     const { vendedores, totalPedidos } = await processarPedidos(resultado);
-    const resposta = { periodo: { inicio: inicio, fim: fim }, vendedores: vendedores, totalPedidos: totalPedidos };
+    const lojaLabel = loja ? (LOJAS[Number(loja)] || loja) : "Todas as lojas";
+    const resposta = { periodo: { inicio: inicio, fim: fim }, loja: lojaLabel, vendedores: vendedores, totalPedidos: totalPedidos };
     cache[key] = { data: resposta, ts: Date.now() };
     res.json(resposta);
   } catch (err) {
