@@ -783,56 +783,89 @@ app.get("/historico", async (req, res) => {
 // alguém abra o dashboard. Para persistir de verdade seria preciso um
 // disco/banco — ver nota no README.
 const NIVEIS_META = ["meta", "superMeta", "ouro"];
-let metasStore = metasVazias();
+let metasSalvas = metasVazias();
 let metasAtualizadoEm = null;
 
+function niveisZerados() { return { meta: 0, superMeta: 0, ouro: 0 }; }
+
 function metasVazias() {
-  const o = {};
+  const o = { lojas: {}, vendedores: {} };
+  IDS_LOJAS.forEach(function (lojaId) { o.lojas[lojaId] = niveisZerados(); });
   Object.keys(VENDEDORES).forEach(function (id) {
     const nome = VENDEDORES[id];
-    o[nome] = {};
-    IDS_LOJAS.forEach(function (lojaId) { o[nome][lojaId] = { meta: 0, superMeta: 0, ouro: 0 }; });
+    o.vendedores[nome] = {};
+    IDS_LOJAS.forEach(function (lojaId) { o.vendedores[nome][lojaId] = niveisZerados(); });
   });
   return o;
 }
 
-// Só aceita vendedores e lojas conhecidos, e números finitos >= 0.
-// Um POST malformado não corrompe o store nem quebra quem for ler depois.
+// Aceita { meta, superMeta, ouro }, ou um número solto (formato antigo,
+// que vira a meta-base). Descarta o que não for número finito >= 0.
+function sanitizarNiveis(reg) {
+  const out = niveisZerados();
+  if (reg == null) return out;
+  if (typeof reg === "number") {
+    out.meta = isFinite(reg) && reg > 0 ? Math.round(reg * 100) / 100 : 0;
+    return out;
+  }
+  if (typeof reg !== "object") return out;
+  NIVEIS_META.forEach(function (n) {
+    const v = Number(reg[n]);
+    out[n] = isFinite(v) && v > 0 ? Math.round(v * 100) / 100 : 0;
+  });
+  return out;
+}
+
+// Só aceita vendedores e lojas conhecidos. Um POST malformado não corrompe
+// o store nem quebra quem for ler depois. Aceita tanto o formato novo
+// ({ lojas, vendedores }) quanto o antigo (vendedores na raiz).
 function sanitizarMetas(bruto) {
   const out = metasVazias();
   if (!bruto || typeof bruto !== "object") return out;
-  Object.keys(out).forEach(function (nome) {
-    const porLoja = bruto[nome];
-    if (!porLoja || typeof porLoja !== "object") return;
+
+  const temEnvelope = ("lojas" in bruto) || ("vendedores" in bruto);
+  const porVendedor = temEnvelope ? (bruto.vendedores || {}) : bruto;
+  const porLojaRaiz = temEnvelope ? (bruto.lojas || {}) : {};
+
+  IDS_LOJAS.forEach(function (lojaId) {
+    if (porLojaRaiz && typeof porLojaRaiz === "object") {
+      out.lojas[lojaId] = sanitizarNiveis(porLojaRaiz[lojaId]);
+    }
+  });
+  Object.keys(out.vendedores).forEach(function (nome) {
+    const doVendedor = porVendedor && typeof porVendedor === "object" ? porVendedor[nome] : null;
+    if (!doVendedor || typeof doVendedor !== "object") return;
     IDS_LOJAS.forEach(function (lojaId) {
-      const reg = porLoja[lojaId];
-      if (reg == null) return;
-      if (typeof reg === "number") {                       // formato antigo: só a meta-base
-        out[nome][lojaId].meta = isFinite(reg) && reg > 0 ? Math.round(reg * 100) / 100 : 0;
-        return;
-      }
-      if (typeof reg !== "object") return;
-      NIVEIS_META.forEach(function (n) {
-        const v = Number(reg[n]);
-        out[nome][lojaId][n] = isFinite(v) && v > 0 ? Math.round(v * 100) / 100 : 0;
-      });
+      out.vendedores[nome][lojaId] = sanitizarNiveis(doVendedor[lojaId]);
     });
   });
   return out;
 }
 
+function regTemDados(reg) {
+  return NIVEIS_META.some(function (n) { return (reg || {})[n] > 0; });
+}
 function metasTemDados(m) {
-  return Object.keys(m).some(function (nome) {
-    return IDS_LOJAS.some(function (lojaId) {
-      return NIVEIS_META.some(function (n) { return (m[nome][lojaId] || {})[n] > 0; });
-    });
+  if (!m) return false;
+  const lojas = IDS_LOJAS.some(function (lojaId) { return regTemDados((m.lojas || {})[lojaId]); });
+  const vend = Object.keys(m.vendedores || {}).some(function (nome) {
+    return IDS_LOJAS.some(function (lojaId) { return regTemDados(m.vendedores[nome][lojaId]); });
+  });
+  return lojas || vend;
+}
+
+// Chaves aceitas num POST: o envelope novo ou os nomes dos vendedores soltos
+function chavesReconhecidas(corpo) {
+  const nomes = Object.keys(metasSalvas.vendedores);
+  return Object.keys(corpo).filter(function (k) {
+    return k === "lojas" || k === "vendedores" || nomes.indexOf(k) !== -1;
   });
 }
 
 app.get("/metas", (req, res) => {
   res.json({
-    metas: metasStore,
-    vazio: !metasTemDados(metasStore),
+    metas: metasSalvas,
+    vazio: !metasTemDados(metasSalvas),
     atualizadoEm: metasAtualizadoEm,
     niveis: NIVEIS_META,
     vendedores: Object.keys(VENDEDORES).map(function (id) { return VENDEDORES[id]; }),
@@ -847,20 +880,20 @@ app.post("/metas", (req, res) => {
       erro: "Corpo inválido. Envie { metas: { \"<vendedor>\": { \"<idLoja>\": { meta, superMeta, ouro } } } }",
     });
   }
-  // Um corpo vazio (ou sem nenhum vendedor conhecido) chega aqui como {} e
-  // apagaria todas as metas em silêncio. Exige pelo menos um nome válido —
-  // para zerar de propósito, basta mandar o vendedor com os níveis em 0.
-  const conhecidos = Object.keys(metasStore);
-  if (!Object.keys(corpo).some(function (k) { return conhecidos.indexOf(k) !== -1; })) {
+  // Um corpo vazio chega aqui como {} e apagaria tudo em silêncio. Exige ao
+  // menos uma chave reconhecível — para zerar de propósito, basta mandar a
+  // loja ou o vendedor com os níveis em 0.
+  if (chavesReconhecidas(corpo).length === 0) {
     return res.status(400).json({
-      erro: "Nenhum vendedor conhecido no corpo. Esperado ao menos um de: " + conhecidos.join(", "),
+      erro: "Nada reconhecível no corpo. Esperado 'lojas', 'vendedores' ou um nome de vendedor: " +
+            Object.keys(metasSalvas.vendedores).join(", "),
       recebido: Object.keys(corpo).slice(0, 10),
     });
   }
-  metasStore = sanitizarMetas(corpo);
+  metasSalvas = sanitizarMetas(corpo);
   metasAtualizadoEm = new Date().toISOString();
   console.log("Metas atualizadas em " + metasAtualizadoEm);
-  res.json({ ok: true, metas: metasStore, atualizadoEm: metasAtualizadoEm });
+  res.json({ ok: true, metas: metasSalvas, atualizadoEm: metasAtualizadoEm });
 });
 
 // ─── Rotas auxiliares ─────────────────────────────────────────────────
@@ -902,7 +935,7 @@ app.get("/status", (req, res) => {
   });
   res.json({
     ok: true, autenticado: !!accessToken, hoje: hojeSP(), lojas: LOJAS, caches: caches,
-    metas: { definidas: metasTemDados(metasStore), atualizadoEm: metasAtualizadoEm },
+    metas: { definidas: metasTemDados(metasSalvas), atualizadoEm: metasAtualizadoEm },
   });
 });
 

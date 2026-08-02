@@ -68,17 +68,24 @@ Datas comemorativas cobertas: Volta às Aulas, Carnaval, Dia da Mulher, Páscoa,
 ### `GET /metas` · `POST /metas`
 Metas dos vendedores, em **memória**. Não dependem da autenticação no Bling.
 
+Guardadas em `metasSalvas`, com metas **da loja** e **do vendedor** no mesmo objeto:
+
 ```jsonc
 // GET /metas
 {
-  "metas": { "Giovana": { "203654110": { "meta": 45000, "superMeta": 52000, "ouro": 65000 }, "203777302": {...} } },
+  "metas": {
+    "lojas":      { "203654110": { "meta": 150000, "superMeta": 175000, "ouro": 210000 }, "203777302": {...} },
+    "vendedores": { "Giovana": { "203654110": { "meta": 45000, "superMeta": 52000, "ouro": 65000 }, "203777302": {...} } }
+  },
   "vazio": false,                 // true quando nenhum nível foi preenchido
   "atualizadoEm": "2026-08-01T15:04:05.000Z",
   "niveis": ["meta", "superMeta", "ouro"]
 }
 ```
 
-O `POST` aceita `{ metas: {...} }` ou o objeto cru, e **substitui** o conteúdo inteiro. A entrada é sanitizada: só passam vendedores e lojas conhecidos, e valores numéricos finitos ≥ 0 (um número solto no lugar do objeto vira a `meta`-base). Um corpo sem nenhum vendedor conhecido — inclusive `{}`, no qual um POST vazio se transforma — é rejeitado com **400**, senão apagaria todas as metas em silêncio. Para zerar de propósito, mande o vendedor com os três níveis em `0`.
+A meta da loja é independente da soma das metas dos vendedores — o frontend mostra a diferença quando as duas divergem.
+
+O `POST` aceita `{ metas: {...} }` ou o objeto cru, e **substitui** o conteúdo inteiro. Também aceita o formato anterior (vendedores na raiz, sem o envelope), tratando-o como `vendedores` e zerando as lojas. A entrada é sanitizada: só passam vendedores e lojas conhecidos, e valores numéricos finitos ≥ 0 (um número solto no lugar do objeto vira a `meta`-base). Um corpo sem nenhuma chave reconhecível — inclusive `{}`, no qual um POST vazio se transforma — é rejeitado com **400**, senão apagaria todas as metas em silêncio. Para zerar de propósito, mande a loja ou o vendedor com os três níveis em `0`.
 
 > **As metas se perdem quando o Render reinicia.** O frontend guarda uma cópia em `localStorage` e, ao encontrar `vazio: true`, devolve as metas para o servidor — então na prática elas sobrevivem a um restart desde que alguém abra o dashboard depois. Para persistência real seria preciso um disco do Render ou um banco (Postgres/Redis).
 
