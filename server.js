@@ -38,6 +38,11 @@ function nomeVendedor(id) {
   return VENDEDORES[id] || ("Vendedor " + id);
 }
 
+function nomeLoja(id) {
+  if (!id) return "Todas as lojas";
+  return LOJAS[id] ? LOJAS[id].nome : ("Loja " + id);
+}
+
 // ─── Datas (fuso America/Sao_Paulo, UTC-3 fixo) ───────────────────────
 function ymd(d) {
   return d.getUTCFullYear() + "-" + String(d.getUTCMonth() + 1).padStart(2, "0") + "-" + String(d.getUTCDate()).padStart(2, "0");
@@ -368,16 +373,48 @@ function serieDiaria(registros) {
   return out;
 }
 
+// Recorta a resposta completa para uma única loja (compatibilidade com ?loja=).
+// O cache guarda sempre a resposta completa: as duas lojas saem de uma coleta só.
+function escoparPorLoja(completa, loja) {
+  if (!loja) return Object.assign({}, completa, { loja: nomeLoja(null) });
+  const bloco = completa.porLoja[loja];
+  if (!bloco) {
+    return Object.assign({}, completa, {
+      loja: nomeLoja(loja), vendedores: [], totalPedidos: 0, porLoja: {}, diario: {},
+    });
+  }
+  const diario = {};
+  Object.keys(completa.diario).forEach(function (data) {
+    const reg = completa.diario[data].porLoja[loja];
+    if (!reg) return;
+    diario[data] = { faturamento: reg.faturamento, pedidos: reg.pedidos, porLoja: {} };
+    diario[data].porLoja[loja] = reg;
+  });
+  const porLoja = {};
+  porLoja[loja] = bloco;
+  return {
+    periodo: completa.periodo,
+    loja: nomeLoja(loja),
+    vendedores: bloco.vendedores,
+    totalPedidos: bloco.pedidos,
+    porLoja: porLoja,
+    diario: diario,
+    lojas: LOJAS,
+    atualizadoEm: completa.atualizadoEm,
+  };
+}
+
 // ─── /vendas ──────────────────────────────────────────────────────────
 app.get("/vendas", async (req, res) => {
   if (!accessToken) return res.status(401).json({ erro: "Nao autenticado. Acesse /auth primeiro." });
   const hoje = hojeSP();
   const inicio = req.query.dataInicio || inicioMes(hoje);
   const fim = req.query.dataFim || hoje;
+  const loja = req.query.loja ? String(req.query.loja) : null;
   const key = cacheKey(inicio, fim);
   if (cacheValido(key)) {
-    console.log("Cache hit: " + key);
-    return res.json(cache[key].data);
+    console.log("Cache hit: " + key + (loja ? " (loja " + loja + ")" : ""));
+    return res.json(escoparPorLoja(cache[key].data, loja));
   }
   console.log("Cache miss: " + key);
   try {
@@ -394,7 +431,7 @@ app.get("/vendas", async (req, res) => {
       atualizadoEm: new Date().toISOString(),
     };
     cache[key] = { data: resposta, ts: Date.now() };
-    res.json(resposta);
+    res.json(escoparPorLoja(resposta, loja));
   } catch (err) {
     if (err.response && err.response.status === 401) {
       await renovarToken();
@@ -684,6 +721,16 @@ function analisar(registros, inicio, fim, diasSemanaLoja) {
   };
 }
 
+// Recorta o histórico para uma loja: `geral` passa a ser a análise dela.
+function escoparHistorico(completa, loja) {
+  if (!loja) return completa;
+  const bloco = completa.lojas[loja];
+  if (!bloco) return Object.assign({}, completa, { loja: nomeLoja(loja), lojas: {} });
+  const lojas = {};
+  lojas[loja] = bloco;
+  return Object.assign({}, completa, { loja: nomeLoja(loja), geral: bloco, lojas: lojas });
+}
+
 // ─── /historico ───────────────────────────────────────────────────────
 app.get("/historico", async (req, res) => {
   if (!accessToken) return res.status(401).json({ erro: "Nao autenticado. Acesse /auth primeiro." });
@@ -691,11 +738,12 @@ app.get("/historico", async (req, res) => {
   const hoje = hojeSP();
   const inicio = inicioMes(mesesAtras(hoje, meses - 1));
   const fim = req.query.dataFim || hoje;
+  const loja = req.query.loja ? String(req.query.loja) : null;
   const key = "hist_" + meses + "_" + cacheKey(inicio, fim);
 
   if (cacheValido(key, CACHE_TTL_HIST)) {
-    console.log("Cache hit histórico: " + key);
-    return res.json(cache[key].data);
+    console.log("Cache hit histórico: " + key + (loja ? " (loja " + loja + ")" : ""));
+    return res.json(escoparHistorico(cache[key].data, loja));
   }
   console.log("Cache miss histórico: " + key + " (" + meses + " meses)");
 
@@ -717,7 +765,7 @@ app.get("/historico", async (req, res) => {
       atualizadoEm: new Date().toISOString(),
     };
     cache[key] = { data: resposta, ts: Date.now() };
-    res.json(resposta);
+    res.json(escoparHistorico(resposta, loja));
   } catch (err) {
     if (err.response && err.response.status === 401) {
       await renovarToken();

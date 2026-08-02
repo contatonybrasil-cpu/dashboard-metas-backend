@@ -26,8 +26,10 @@ Pedidos sem vendedor mapeado entram como **Gerentes**. Só pedidos com situaçã
 ### `GET /auth` → `GET /callback`
 Fluxo OAuth. Acesse `/auth` no navegador para (re)conectar. O token é mantido **em memória** — depois de um restart do Render é preciso reconectar.
 
-### `GET /vendas?dataInicio=YYYY-MM-DD&dataFim=YYYY-MM-DD`
+### `GET /vendas?dataInicio=YYYY-MM-DD&dataFim=YYYY-MM-DD[&loja=<id>]`
 Vendas do período. Sem parâmetros, usa o mês corrente. Cache de 30 min.
+
+Sem `loja`, devolve as duas lojas de uma vez em `porLoja` — é o que o dashboard usa, porque assim uma requisição serve todas as visões. Com `loja=<id>`, a resposta vem recortada para aquela loja (`vendedores` e `totalPedidos` passam a ser os dela e `loja` traz o nome). O recorte é feito sobre a resposta completa em cache, então filtrar por loja **não** dispara uma nova coleta no Bling.
 
 ```jsonc
 {
@@ -41,8 +43,8 @@ Vendas do período. Sem parâmetros, usa o mês corrente. Cache de 30 min.
 }
 ```
 
-### `GET /historico?meses=6`
-Aprende os padrões do Bling nos últimos N meses (1–24, padrão 6). Cache de 6 h. Não busca detalhe de itens, então é bem mais rápido que `/vendas` em janelas longas.
+### `GET /historico?meses=6[&loja=<id>]`
+Aprende os padrões do Bling nos últimos N meses (1–24, padrão 6). Cache de 6 h. Com `loja=<id>`, o bloco `geral` passa a ser a análise daquela loja. Não busca detalhe de itens, então é bem mais rápido que `/vendas` em janelas longas.
 
 Retorna `geral` e um bloco por loja em `lojas`, cada um com:
 
