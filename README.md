@@ -18,8 +18,10 @@ Integração Bling API v3 → Dashboard de Performance da New York Store.
 | Parque do Povo | `203654110` | Segunda a sábado |
 | Prudenshopping | `203777302` | Todos os dias |
 
-Vendedores: Guilherme `15596666568`, Felipe `15596595092`, Giovana `15596218776`, Ítalo `15596662555`.
+Vendedores: Guilherme `15596666568`, Felipe `15596595092`, Giovana `15596218776`.
 Pedidos sem vendedor mapeado entram como **Gerentes**. Só pedidos com situação `9` (atendido) são contados.
+
+> Ítalo (`15596662555`) foi removido do mapeamento. Como o rateio joga em **Gerentes** tudo que não bate com um vendedor mapeado, os pedidos históricos dele passam a aparecer lá — não somem do faturamento total.
 
 ## Rotas
 

@@ -21,7 +21,6 @@ const VENDEDORES = {
   15596666568: "Guilherme",
   15596595092: "Felipe",
   15596218776: "Giovana",
-  15596662555: "Ítalo",
 };
 
 // diasSemana: 0 = domingo ... 6 = sábado
