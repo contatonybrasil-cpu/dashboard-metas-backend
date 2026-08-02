@@ -776,6 +776,93 @@ app.get("/historico", async (req, res) => {
   }
 });
 
+// ═══ METAS ════════════════════════════════════════════════════════════
+// Guardadas em memória: um restart do Render zera. O frontend mantém uma
+// cópia em localStorage e re-semeia o servidor quando encontra o store
+// vazio, então na prática as metas sobrevivem a um reinício desde que
+// alguém abra o dashboard. Para persistir de verdade seria preciso um
+// disco/banco — ver nota no README.
+const NIVEIS_META = ["meta", "superMeta", "ouro"];
+let metasStore = metasVazias();
+let metasAtualizadoEm = null;
+
+function metasVazias() {
+  const o = {};
+  Object.keys(VENDEDORES).forEach(function (id) {
+    const nome = VENDEDORES[id];
+    o[nome] = {};
+    IDS_LOJAS.forEach(function (lojaId) { o[nome][lojaId] = { meta: 0, superMeta: 0, ouro: 0 }; });
+  });
+  return o;
+}
+
+// Só aceita vendedores e lojas conhecidos, e números finitos >= 0.
+// Um POST malformado não corrompe o store nem quebra quem for ler depois.
+function sanitizarMetas(bruto) {
+  const out = metasVazias();
+  if (!bruto || typeof bruto !== "object") return out;
+  Object.keys(out).forEach(function (nome) {
+    const porLoja = bruto[nome];
+    if (!porLoja || typeof porLoja !== "object") return;
+    IDS_LOJAS.forEach(function (lojaId) {
+      const reg = porLoja[lojaId];
+      if (reg == null) return;
+      if (typeof reg === "number") {                       // formato antigo: só a meta-base
+        out[nome][lojaId].meta = isFinite(reg) && reg > 0 ? Math.round(reg * 100) / 100 : 0;
+        return;
+      }
+      if (typeof reg !== "object") return;
+      NIVEIS_META.forEach(function (n) {
+        const v = Number(reg[n]);
+        out[nome][lojaId][n] = isFinite(v) && v > 0 ? Math.round(v * 100) / 100 : 0;
+      });
+    });
+  });
+  return out;
+}
+
+function metasTemDados(m) {
+  return Object.keys(m).some(function (nome) {
+    return IDS_LOJAS.some(function (lojaId) {
+      return NIVEIS_META.some(function (n) { return (m[nome][lojaId] || {})[n] > 0; });
+    });
+  });
+}
+
+app.get("/metas", (req, res) => {
+  res.json({
+    metas: metasStore,
+    vazio: !metasTemDados(metasStore),
+    atualizadoEm: metasAtualizadoEm,
+    niveis: NIVEIS_META,
+    vendedores: Object.keys(VENDEDORES).map(function (id) { return VENDEDORES[id]; }),
+    lojas: LOJAS,
+  });
+});
+
+app.post("/metas", (req, res) => {
+  const corpo = req.body && req.body.metas ? req.body.metas : req.body;
+  if (!corpo || typeof corpo !== "object" || Array.isArray(corpo)) {
+    return res.status(400).json({
+      erro: "Corpo inválido. Envie { metas: { \"<vendedor>\": { \"<idLoja>\": { meta, superMeta, ouro } } } }",
+    });
+  }
+  // Um corpo vazio (ou sem nenhum vendedor conhecido) chega aqui como {} e
+  // apagaria todas as metas em silêncio. Exige pelo menos um nome válido —
+  // para zerar de propósito, basta mandar o vendedor com os níveis em 0.
+  const conhecidos = Object.keys(metasStore);
+  if (!Object.keys(corpo).some(function (k) { return conhecidos.indexOf(k) !== -1; })) {
+    return res.status(400).json({
+      erro: "Nenhum vendedor conhecido no corpo. Esperado ao menos um de: " + conhecidos.join(", "),
+      recebido: Object.keys(corpo).slice(0, 10),
+    });
+  }
+  metasStore = sanitizarMetas(corpo);
+  metasAtualizadoEm = new Date().toISOString();
+  console.log("Metas atualizadas em " + metasAtualizadoEm);
+  res.json({ ok: true, metas: metasStore, atualizadoEm: metasAtualizadoEm });
+});
+
 // ─── Rotas auxiliares ─────────────────────────────────────────────────
 app.get("/config", (req, res) => {
   res.json({ lojas: LOJAS, vendedores: VENDEDORES, hoje: hojeSP() });
@@ -813,7 +900,10 @@ app.get("/status", (req, res) => {
       valido: cacheValido(k, hist ? CACHE_TTL_HIST : CACHE_TTL),
     };
   });
-  res.json({ ok: true, autenticado: !!accessToken, hoje: hojeSP(), lojas: LOJAS, caches: caches });
+  res.json({
+    ok: true, autenticado: !!accessToken, hoje: hojeSP(), lojas: LOJAS, caches: caches,
+    metas: { definidas: metasTemDados(metasStore), atualizadoEm: metasAtualizadoEm },
+  });
 });
 
 async function preCarregarCache() {
